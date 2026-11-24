@@ -1,0 +1,10 @@
+{
+  "name": "Remix Hortimarket Delivery — Minimercado \u0026 Hortifruti",
+  "description": "Peça frutas, verduras, padaria, frios e mercearia no Hortimarket Minimercado. Confira as ofertas do dia e o encarte digital com entrega rápida.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
