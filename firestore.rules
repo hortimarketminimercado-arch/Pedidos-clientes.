@@ -1,0 +1,315 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        request.auth.token.email == 'hortimarketminimercado@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidStoreConfig(data) {
+      return data.keys().hasAll([
+          'name',
+          'whatsappNumber',
+          'isOpen',
+          'deliveryFee',
+          'freeDeliveryThreshold',
+          'acceptedPayments',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'name',
+          'tagline',
+          'whatsappNumber',
+          'isOpen',
+          'openingHours',
+          'address',
+          'neighborhood',
+          'deliveryFee',
+          'freeDeliveryThreshold',
+          'flyerTitle',
+          'flyerValidity',
+          'flyerSubtitle',
+          'acceptedPayments',
+          'pixKey',
+          'paymentLinkInfo',
+          'logoUrl',
+          'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && (!('tagline' in data) || (data.tagline is string && data.tagline.size() <= 240))
+        && data.whatsappNumber is string && data.whatsappNumber.size() >= 8 && data.whatsappNumber.size() <= 25
+        && data.whatsappNumber.matches('^[0-9+()\\-\\s]{8,25}$')
+        && data.isOpen is bool
+        && (!('openingHours' in data) || (data.openingHours is string && data.openingHours.size() <= 160))
+        && (!('address' in data) || (data.address is string && data.address.size() <= 200))
+        && (!('neighborhood' in data) || (data.neighborhood is string && data.neighborhood.size() <= 120))
+        && data.deliveryFee is number && data.deliveryFee >= 0 && data.deliveryFee <= 1000
+        && data.freeDeliveryThreshold is number && data.freeDeliveryThreshold >= 0 && data.freeDeliveryThreshold <= 10000
+        && (!('flyerTitle' in data) || (data.flyerTitle is string && data.flyerTitle.size() <= 160))
+        && (!('flyerValidity' in data) || (data.flyerValidity is string && data.flyerValidity.size() <= 240))
+        && (!('flyerSubtitle' in data) || (data.flyerSubtitle is string && data.flyerSubtitle.size() <= 240))
+        && data.acceptedPayments is list
+        && data.acceptedPayments.size() >= 1
+        && data.acceptedPayments.size() <= 4
+        && data.acceptedPayments.hasOnly(['pix', 'cartao_link', 'cartao', 'dinheiro'])
+        && (!('pixKey' in data) || (data.pixKey is string && data.pixKey.size() <= 140))
+        && (!('paymentLinkInfo' in data) || (data.paymentLinkInfo is string && data.paymentLinkInfo.size() <= 300))
+        && (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 300000))
+        && data.updatedAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll([
+          'name',
+          'department',
+          'unit',
+          'weightLabel',
+          'price',
+          'stock',
+          'imageUrl',
+          'isDailyOffer',
+          'inDigitalFlyer',
+          'active',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ean',
+          'name',
+          'description',
+          'department',
+          'unit',
+          'weightLabel',
+          'price',
+          'promoPrice',
+          'stock',
+          'imageUrl',
+          'isDailyOffer',
+          'inDigitalFlyer',
+          'active',
+          'updatedAt'
+        ])
+        && (!('ean' in data) || (data.ean is string && data.ean.size() <= 32))
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 140
+        && (!('description' in data) || (data.description is string && data.description.size() <= 500))
+        && data.department is string && data.department.size() >= 1 && data.department.size() <= 60
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 30
+        && data.weightLabel is string && data.weightLabel.size() >= 1 && data.weightLabel.size() <= 60
+        && data.price is number && data.price > 0 && data.price <= 100000
+        && (!('promoPrice' in data) || data.promoPrice == null || (data.promoPrice is number && data.promoPrice > 0 && data.promoPrice <= 100000))
+        && data.stock is number && data.stock >= 0 && data.stock <= 1000000
+        && data.imageUrl is string && data.imageUrl.size() <= 300000
+        && data.isDailyOffer is bool
+        && data.inDigitalFlyer is bool
+        && data.active is bool
+        && data.updatedAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
+    function isValidOrderItems(items) {
+      return items is list
+        && items.size() >= 1
+        && items.size() <= 60
+        && items[0] is map
+        && items[0].keys().hasAll(['productId', 'name', 'unit', 'weightLabel', 'unitPrice', 'quantity', 'subtotal'])
+        && items[0].keys().hasOnly(['productId', 'name', 'unit', 'weightLabel', 'unitPrice', 'quantity', 'subtotal'])
+        && items[0].productId is string && items[0].productId.size() >= 1 && items[0].productId.size() <= 80
+        && items[0].name is string && items[0].name.size() >= 1 && items[0].name.size() <= 140
+        && items[0].unit is string && items[0].unit.size() >= 1 && items[0].unit.size() <= 30
+        && items[0].weightLabel is string && items[0].weightLabel.size() >= 1 && items[0].weightLabel.size() <= 60
+        && items[0].unitPrice is number && items[0].unitPrice > 0 && items[0].unitPrice <= 100000
+        && items[0].quantity is number && items[0].quantity >= 1 && items[0].quantity <= 1000
+        && items[0].subtotal is number && items[0].subtotal > 0 && items[0].subtotal <= 500000;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll([
+          'code',
+          'customerName',
+          'customerPhone',
+          'fulfillmentType',
+          'address',
+          'paymentMethod',
+          'items',
+          'subtotal',
+          'deliveryFee',
+          'total',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'code',
+          'customerName',
+          'customerPhone',
+          'fulfillmentType',
+          'address',
+          'neighborhood',
+          'complement',
+          'paymentMethod',
+          'changeFor',
+          'notes',
+          'items',
+          'subtotal',
+          'deliveryFee',
+          'total',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.code is string && data.code.size() >= 4 && data.code.size() <= 20
+        && data.code.matches('^HM-[A-Z0-9]{4,12}$')
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120
+        && data.customerPhone is string && data.customerPhone.size() >= 6 && data.customerPhone.size() <= 30
+        && data.fulfillmentType is string && data.fulfillmentType in ['delivery', 'retirada']
+        && data.address is string && data.address.size() >= 1 && data.address.size() <= 220
+        && (!('neighborhood' in data) || (data.neighborhood is string && data.neighborhood.size() <= 120))
+        && (!('complement' in data) || (data.complement is string && data.complement.size() <= 120))
+        && data.paymentMethod is string && data.paymentMethod in ['pix', 'cartao_link', 'cartao', 'dinheiro']
+        && (!('changeFor' in data) || (data.changeFor is string && data.changeFor.size() <= 60))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 400))
+        && isValidOrderItems(data.items)
+        && data.subtotal is number && data.subtotal > 0 && data.subtotal <= 500000
+        && data.deliveryFee is number && data.deliveryFee >= 0 && data.deliveryFee <= 1000
+        && data.total is number && data.total > 0 && data.total <= 500000
+        && data.status is string && data.status in ['novo', 'separacao', 'entrega', 'concluido', 'cancelado']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidOrderTracking(data) {
+      return data.keys().hasAll([
+          'orderId',
+          'code',
+          'fulfillmentType',
+          'paymentMethod',
+          'items',
+          'subtotal',
+          'deliveryFee',
+          'total',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'orderId',
+          'code',
+          'fulfillmentType',
+          'paymentMethod',
+          'items',
+          'subtotal',
+          'deliveryFee',
+          'total',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.orderId)
+        && data.code is string && data.code.size() >= 4 && data.code.size() <= 20
+        && data.code.matches('^HM-[A-Z0-9]{4,12}$')
+        && data.fulfillmentType is string && data.fulfillmentType in ['delivery', 'retirada']
+        && data.paymentMethod is string && data.paymentMethod in ['pix', 'cartao_link', 'cartao', 'dinheiro']
+        && isValidOrderItems(data.items)
+        && data.subtotal is number && data.subtotal > 0 && data.subtotal <= 500000
+        && data.deliveryFee is number && data.deliveryFee >= 0 && data.deliveryFee <= 1000
+        && data.total is number && data.total > 0 && data.total <= 500000
+        && data.status is string && data.status in ['novo', 'separacao', 'entrega', 'concluido', 'cancelado']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+      allow list, write: if false;
+    }
+
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow list, write: if false;
+    }
+
+    match /storeConfig/{configId} {
+      allow get: if isValidId(configId);
+      allow list: if true;
+      allow create: if isValidId(configId) && isValidStoreConfig(incoming()) && isAdmin();
+      allow update: if isValidId(configId) && isValidStoreConfig(incoming()) && isAdmin();
+      allow delete: if isValidId(configId) && isAdmin();
+    }
+
+    match /products/{productId} {
+      allow get: if isValidId(productId);
+      allow list: if true;
+      allow create: if isValidId(productId) && isValidProduct(incoming()) && isAdmin();
+      allow update: if isValidId(productId) && isValidProduct(incoming()) && isAdmin();
+      allow delete: if isValidId(productId) && isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(orderId)
+        && isValidOrder(incoming())
+        && incoming().status == 'novo'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(orderId)
+        && isValidOrder(incoming())
+        && isAdmin()
+        && incoming().createdAt == existing().createdAt
+        && incoming().code == existing().code
+        && incoming().updatedAt == request.time
+        && (existing().status in ['novo', 'separacao', 'entrega'] || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+
+    match /orderTracking/{orderId} {
+      allow get: if isValidId(orderId);
+      allow list: if isAdmin();
+      allow create: if isValidId(orderId)
+        && isValidOrderTracking(incoming())
+        && incoming().orderId == orderId
+        && incoming().status == 'novo'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/orders/$(orderId));
+      allow update: if isValidId(orderId)
+        && isValidOrderTracking(incoming())
+        && isAdmin()
+        && incoming().orderId == existing().orderId
+        && incoming().createdAt == existing().createdAt
+        && incoming().code == existing().code
+        && incoming().updatedAt == request.time
+        && (existing().status in ['novo', 'separacao', 'entrega'] || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+  }
+}

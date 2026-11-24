@@ -1,5 +1,6 @@
-import { MessageCircle, ShoppingBag } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
+import { Lock, LogIn, MessageCircle, ShieldAlert, ShoppingBag } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { AdminView } from './components/AdminView';
 import { CartDrawer } from './components/CartDrawer';
 import { CatalogView } from './components/CatalogView';
@@ -11,19 +12,25 @@ import {
   INITIAL_DEPARTMENTS,
   INITIAL_STORE,
   computeAnalytics,
-  createInitialOrders,
   createInitialProducts,
 } from './data/seed';
+import { auth, googleProvider } from './firebase';
 import {
+  ADMIN_EMAIL,
+  type StoredCustomerOrderRef,
+  checkUserIsAdmin,
   createProduct,
   deleteProduct,
-  fetchBootstrapData,
+  ensureFirestoreSeeded,
+  subscribeAdminOrders,
+  subscribeCustomerOrders,
+  subscribeProducts,
+  subscribeStoreConfig,
   updateOrderStatus,
   updateProduct,
   updateStoreConfig,
 } from './services/api';
 import type {
-  AnalyticsSummary,
   AppView,
   CatalogFilter,
   Department,
@@ -34,7 +41,7 @@ import type {
 import { buildWhatsAppChatUrl, formatBRL } from './utils/format';
 
 const CART_STORAGE_KEY = 'hortimarket_cart_v1';
-const MY_ORDERS_KEY = 'hortimarket_my_orders_v1';
+const MY_ORDERS_KEY = 'hortimarket_my_orders_v2';
 
 function checkAdminRoute(): boolean {
   if (typeof window === 'undefined') return false;
@@ -50,19 +57,41 @@ function checkAdminRoute(): boolean {
   );
 }
 
+function loadStoredOrderRefs(): StoredCustomerOrderRef[] {
+  try {
+    const saved = localStorage.getItem(MY_ORDERS_KEY);
+    if (!saved) return [];
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is StoredCustomerOrderRef =>
+        Boolean(item && typeof item.id === 'string' && typeof item.code === 'string')
+    );
+  } catch {
+    return [];
+  }
+}
+
 export default function App() {
   const [adminEnabled, setAdminEnabled] = useState<boolean>(() => checkAdminRoute());
   const [view, setView] = useState<AppView>(() => (checkAdminRoute() ? 'admin' : 'catalogo'));
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>('all');
   const [cartOpen, setCartOpen] = useState(false);
 
+  const [authReady, setAuthReady] = useState(false);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminChecking, setAdminChecking] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
+
   useEffect(() => {
     const syncRoute = () => {
-      const isAdmin = checkAdminRoute();
-      setAdminEnabled(isAdmin);
+      const nextAdmin = checkAdminRoute();
+      setAdminEnabled(nextAdmin);
       setView((prev) => {
-        if (isAdmin && prev !== 'admin') return 'admin';
-        if (!isAdmin && prev === 'admin') return 'catalogo';
+        if (nextAdmin && prev !== 'admin') return 'admin';
+        if (!nextAdmin && prev === 'admin') return 'catalogo';
         return prev;
       });
     };
@@ -74,16 +103,32 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setAuthUser(user);
+      if (!user) {
+        setIsAdmin(false);
+        setAuthReady(true);
+        return;
+      }
+      setAdminChecking(true);
+      try {
+        const ok = await checkUserIsAdmin(user);
+        setIsAdmin(ok);
+      } finally {
+        setAdminChecking(false);
+        setAuthReady(true);
+      }
+    });
+    return () => unsub();
+  }, []);
+
   const [store, setStore] = useState<StoreConfig>(INITIAL_STORE);
-  const [departments, setDepartments] = useState<Department[]>(INITIAL_DEPARTMENTS);
+  const [isDbSeeded, setIsDbSeeded] = useState(false);
+  const [departments] = useState<Department[]>(INITIAL_DEPARTMENTS);
   const [products, setProducts] = useState<Product[]>(createInitialProducts);
-  const [orders, setOrders] = useState<Order[]>(() =>
-    checkAdminRoute() ? createInitialOrders() : []
-  );
-  const [analytics, setAnalytics] = useState<AnalyticsSummary>(() =>
-    computeAnalytics(createInitialProducts(), checkAdminRoute() ? createInitialOrders() : [])
-  );
-  const [loading, setLoading] = useState(true);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(false);
 
   const [cart, setCart] = useState<Record<string, number>>(() => {
     try {
@@ -94,78 +139,42 @@ export default function App() {
     }
   });
 
-  const [myOrderCodes, setMyOrderCodes] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem(MY_ORDERS_KEY);
-      return saved ? (JSON.parse(saved) as string[]) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [myOrderRefs, setMyOrderRefs] = useState<StoredCustomerOrderRef[]>(loadStoredOrderRefs);
 
-  const refreshData = useCallback(
-    async (overrideCodes?: string[]) => {
-      try {
-        const data = await fetchBootstrapData({
-          admin: adminEnabled,
-          myOrderCodes: overrideCodes ?? myOrderCodes,
-        });
-        setStore(data.store);
-        setDepartments(data.departments);
-        setProducts(data.products);
-        setOrders(data.orders);
-        setAnalytics(data.analytics);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [adminEnabled, myOrderCodes]
-  );
+  const myOrderCodes = useMemo(() => myOrderRefs.map((r) => r.code), [myOrderRefs]);
 
   useEffect(() => {
-    void refreshData();
-  }, [refreshData]);
+    const unsubStore = subscribeStoreConfig((nextStore, existsInDb) => {
+      setStore(nextStore);
+      setIsDbSeeded(existsInDb);
+      setLoading(false);
+    });
+    return () => unsubStore();
+  }, []);
 
   useEffect(() => {
-    const shouldPollAdmin = adminEnabled && view === 'admin';
-    const shouldPollCustomerOrders = !adminEnabled && view === 'pedidos' && myOrderCodes.length > 0;
-    if (!shouldPollAdmin && !shouldPollCustomerOrders) return;
+    const unsubProducts = subscribeProducts(isDbSeeded, (nextProducts) => {
+      setProducts(nextProducts);
+    });
+    return () => unsubProducts();
+  }, [isDbSeeded]);
 
-    const intervalMs = shouldPollAdmin ? 8000 : 12000;
-    const timer = window.setInterval(() => {
-      void refreshData();
-    }, intervalMs);
+  useEffect(() => {
+    if (!authReady || !adminEnabled || !isAdmin) return;
+    void ensureFirestoreSeeded();
+    const unsubOrders = subscribeAdminOrders((nextOrders) => {
+      setOrders(nextOrders);
+    });
+    return () => unsubOrders();
+  }, [authReady, adminEnabled, isAdmin]);
 
-    const onFocus = () => {
-      void refreshData();
-    };
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'hm_local_orders_v1') {
-        void refreshData();
-      }
-    };
-    let channel: BroadcastChannel | null = null;
-    try {
-      if (typeof BroadcastChannel !== 'undefined') {
-        channel = new BroadcastChannel('hortimarket_sync');
-        channel.onmessage = () => {
-          void refreshData();
-        };
-      }
-    } catch {
-      // Ignore BroadcastChannel errors
-    }
-
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('storage', onStorage);
-
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('storage', onStorage);
-      channel?.close();
-    };
-  }, [adminEnabled, view, myOrderCodes.length, refreshData]);
+  useEffect(() => {
+    if (!authReady || (adminEnabled && isAdmin)) return;
+    const unsubCustomerOrders = subscribeCustomerOrders(myOrderRefs, (nextOrders) => {
+      setOrders(nextOrders);
+    });
+    return () => unsubCustomerOrders();
+  }, [authReady, adminEnabled, isAdmin, myOrderRefs]);
 
   useEffect(() => {
     try {
@@ -174,6 +183,8 @@ export default function App() {
       // Ignore storage errors
     }
   }, [cart]);
+
+  const analytics = useMemo(() => computeAnalytics(products, orders), [products, orders]);
 
   const cartSummary = useMemo(() => {
     let count = 0;
@@ -207,6 +218,26 @@ export default function App() {
       if (product && nextQty > product.stock) return prev;
       return { ...prev, [productId]: nextQty };
     });
+  };
+
+  const handleAdminGoogleLogin = async () => {
+    setAuthError(null);
+    setSigningIn(true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Falha ao autenticar com o Google.';
+      if (!msg.includes('popup-closed-by-user')) {
+        setAuthError('Não foi possível entrar com o Google. Libere pop-ups e tente novamente.');
+      }
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const handleAdminSignOut = async () => {
+    setAuthError(null);
+    await signOut(auth);
   };
 
   if (loading) {
@@ -421,45 +452,120 @@ export default function App() {
             store={store}
             orders={orders}
             myOrderCodes={myOrderCodes}
-            onRefresh={() => void refreshData()}
+            onRefresh={() => setMyOrderRefs([...myOrderRefs])}
             onGoToCatalog={() => setView('catalogo')}
           />
         )}
 
         {adminEnabled && view === 'admin' && (
-          <AdminView
-            store={store}
-            departments={departments}
-            products={products}
-            orders={orders}
-            analytics={analytics}
-            onSaveStore={async (patch) => {
-              const updated = await updateStoreConfig(patch);
-              setStore(updated);
-            }}
-            onCreateProduct={async (input) => {
-              await createProduct(input);
-              await refreshData();
-            }}
-            onUpdateProduct={async (id, patch) => {
-              await updateProduct(id, patch);
-              await refreshData();
-            }}
-            onDeleteProduct={async (id) => {
-              await deleteProduct(id);
-              setCart((prev) => {
-                const copy = { ...prev };
-                delete copy[id];
-                return copy;
-              });
-              await refreshData();
-            }}
-            onUpdateOrderStatus={async (orderId, status) => {
-              await updateOrderStatus(orderId, status);
-              await refreshData();
-            }}
-            onRefresh={() => void refreshData()}
-          />
+          <>
+            {!authReady || adminChecking ? (
+              <div className="max-w-md mx-auto my-16 px-4 text-center space-y-3">
+                <p className="text-sm text-[#526057]">Verificando acesso administrativo...</p>
+              </div>
+            ) : !authUser ? (
+              <div className="max-w-md mx-auto my-12 px-4">
+                <div className="bg-white border border-[#E4E8E0] rounded-2xl p-6 sm:p-8 text-center space-y-5">
+                  <div className="w-12 h-12 rounded-2xl bg-[#EEF3EC] text-[#143624] flex items-center justify-center mx-auto">
+                    <Lock className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <h1 className="font-display text-xl font-bold text-[#143624]">
+                      Painel Administrativo
+                    </h1>
+                    <p className="text-xs text-[#526057] leading-relaxed">
+                      Faça login com a conta Google autorizada da loja ({ADMIN_EMAIL}) para
+                      receber pedidos em tempo real e gerenciar produtos.
+                    </p>
+                  </div>
+                  {authError && (
+                    <p className="text-xs font-semibold text-[#B91C1C] bg-[#FEE2E2] border border-[#FECACA] rounded-lg px-3 py-2">
+                      {authError}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    disabled={signingIn}
+                    onClick={() => void handleAdminGoogleLogin()}
+                    className="w-full inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-sm font-semibold bg-[#143624] text-white hover:bg-[#1F6E43] disabled:opacity-50 transition-colors cursor-pointer"
+                  >
+                    <LogIn className="w-4 h-4" />
+                    <span>{signingIn ? 'Conectando...' : 'Entrar com Google'}</span>
+                  </button>
+                </div>
+              </div>
+            ) : !isAdmin ? (
+              <div className="max-w-md mx-auto my-12 px-4">
+                <div className="bg-white border border-[#E4E8E0] rounded-2xl p-6 sm:p-8 text-center space-y-4">
+                  <div className="w-12 h-12 rounded-2xl bg-[#FEE2E2] text-[#B91C1C] flex items-center justify-center mx-auto">
+                    <ShieldAlert className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <h1 className="font-display text-xl font-bold text-[#143624]">
+                      Acesso não autorizado
+                    </h1>
+                    <p className="text-xs text-[#526057] leading-relaxed">
+                      A conta <strong className="text-[#143624]">{authUser.email}</strong> não
+                      possui permissão administrativa. Entre com{' '}
+                      <strong className="text-[#143624]">{ADMIN_EMAIL}</strong>.
+                    </p>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await handleAdminSignOut();
+                        await handleAdminGoogleLogin();
+                      }}
+                      className="flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold bg-[#143624] text-white hover:bg-[#1F6E43] transition-colors cursor-pointer"
+                    >
+                      Trocar conta Google
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setView('catalogo')}
+                      className="flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold bg-white border border-[#D4DBD0] text-[#435048] hover:bg-[#EEF3EC] transition-colors cursor-pointer"
+                    >
+                      Voltar para loja
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <AdminView
+                store={store}
+                departments={departments}
+                products={products}
+                orders={orders}
+                analytics={analytics}
+                onSaveStore={async (patch) => {
+                  const updated = await updateStoreConfig(store, patch);
+                  setStore(updated);
+                }}
+                onCreateProduct={async (input) => {
+                  await createProduct(input);
+                }}
+                onUpdateProduct={async (id, patch) => {
+                  const current = products.find((p) => p.id === id);
+                  if (current) {
+                    await updateProduct(current, patch);
+                  }
+                }}
+                onDeleteProduct={async (id) => {
+                  await deleteProduct(id);
+                  setCart((prev) => {
+                    const copy = { ...prev };
+                    delete copy[id];
+                    return copy;
+                  });
+                }}
+                onUpdateOrderStatus={async (orderId, status) => {
+                  await updateOrderStatus(orderId, status);
+                }}
+                onSignOut={() => void handleAdminSignOut()}
+              />
+            )}
+          </>
         )}
       </main>
 
@@ -536,21 +642,16 @@ export default function App() {
         }
         onOrderCreated={(createdOrder) => {
           setCart({});
-          const nextCodes = [
-            createdOrder.code,
-            ...myOrderCodes.filter((c) => c !== createdOrder.code),
+          const nextRefs: StoredCustomerOrderRef[] = [
+            { id: createdOrder.id, code: createdOrder.code, receipt: createdOrder },
+            ...myOrderRefs.filter((r) => r.id !== createdOrder.id),
           ];
-          setMyOrderCodes(nextCodes);
-          setOrders((prev) => [
-            createdOrder,
-            ...prev.filter((o) => o.id !== createdOrder.id),
-          ]);
+          setMyOrderRefs(nextRefs);
           try {
-            localStorage.setItem(MY_ORDERS_KEY, JSON.stringify(nextCodes));
+            localStorage.setItem(MY_ORDERS_KEY, JSON.stringify(nextRefs));
           } catch {
             // Ignore storage errors
           }
-          void refreshData(nextCodes);
         }}
       />
     </div>

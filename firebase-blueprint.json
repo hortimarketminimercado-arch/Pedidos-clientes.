@@ -1,0 +1,415 @@
+{
+  "entities": {
+    "StoreConfig": {
+      "title": "StoreConfig",
+      "description": "Configuracao publica e operacional da loja Hortimarket Minimercado.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Nome exibido da loja"
+        },
+        "tagline": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "Slogan curto da loja"
+        },
+        "whatsappNumber": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 25,
+          "pattern": "^[0-9+()\\-\\s]{8,25}$",
+          "description": "Numero de WhatsApp da loja"
+        },
+        "isOpen": {
+          "type": "boolean",
+          "description": "Indica se a loja esta aberta"
+        },
+        "openingHours": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Horario de funcionamento"
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Endereco da loja"
+        },
+        "neighborhood": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Bairro da loja"
+        },
+        "deliveryFee": {
+          "type": "number",
+          "description": "Taxa de entrega padrao em reais"
+        },
+        "freeDeliveryThreshold": {
+          "type": "number",
+          "description": "Valor minimo para frete gratis"
+        },
+        "flyerTitle": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Titulo do encarte digital"
+        },
+        "flyerValidity": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "Texto de validade do encarte"
+        },
+        "flyerSubtitle": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "Subtitulo do encarte"
+        },
+        "acceptedPayments": {
+          "type": "array",
+          "description": "Formas de pagamento aceitas"
+        },
+        "pixKey": {
+          "type": "string",
+          "maxLength": 140,
+          "description": "Chave Pix da loja"
+        },
+        "paymentLinkInfo": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Instrucao para pagamento via link"
+        },
+        "logoUrl": {
+          "type": "string",
+          "maxLength": 300000,
+          "description": "URL ou Data URL da logo"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Carimbo de atualizacao do servidor"
+        }
+      },
+      "required": [
+        "name",
+        "whatsappNumber",
+        "isOpen",
+        "deliveryFee",
+        "freeDeliveryThreshold",
+        "acceptedPayments",
+        "updatedAt"
+      ]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Produto do catalogo Hortimarket.",
+      "type": "object",
+      "properties": {
+        "ean": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Codigo de barras EAN opcional"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140,
+          "description": "Nome do produto"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Descricao curta do produto"
+        },
+        "department": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Identificador do departamento"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30,
+          "description": "Unidade de venda"
+        },
+        "weightLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Peso ou medida exibida"
+        },
+        "price": {
+          "type": "number",
+          "description": "Preco regular"
+        },
+        "promoPrice": {
+          "type": "number",
+          "description": "Preco promocional opcional ou null"
+        },
+        "stock": {
+          "type": "number",
+          "description": "Quantidade em estoque"
+        },
+        "imageUrl": {
+          "type": "string",
+          "maxLength": 300000,
+          "description": "URL ou Data URL da imagem"
+        },
+        "isDailyOffer": {
+          "type": "boolean",
+          "description": "Destacado como oferta do dia"
+        },
+        "inDigitalFlyer": {
+          "type": "boolean",
+          "description": "Incluido no encarte digital"
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Visivel no catalogo"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Carimbo de atualizacao do servidor"
+        }
+      },
+      "required": [
+        "name",
+        "department",
+        "unit",
+        "weightLabel",
+        "price",
+        "stock",
+        "imageUrl",
+        "isDailyOffer",
+        "inDigitalFlyer",
+        "active",
+        "updatedAt"
+      ]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Pedido completo com dados de entrega e contato (restrito ao administrador para leitura).",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 20,
+          "pattern": "^HM-[A-Z0-9]{4,12}$",
+          "description": "Codigo legivel do pedido"
+        },
+        "customerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Nome do cliente"
+        },
+        "customerPhone": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 30,
+          "description": "Telefone/WhatsApp do cliente"
+        },
+        "fulfillmentType": {
+          "type": "string",
+          "enum": ["delivery", "retirada"],
+          "description": "Modalidade de entrega"
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 220,
+          "description": "Endereco de entrega ou retirada"
+        },
+        "neighborhood": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Bairro"
+        },
+        "complement": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Complemento"
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["pix", "cartao_link", "cartao", "dinheiro"],
+          "description": "Forma de pagamento"
+        },
+        "changeFor": {
+          "type": "string",
+          "maxLength": 60,
+          "description": "Troco solicitado"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "Observacoes"
+        },
+        "items": {
+          "type": "array",
+          "description": "Lista de itens do pedido"
+        },
+        "subtotal": {
+          "type": "number",
+          "description": "Subtotal dos itens"
+        },
+        "deliveryFee": {
+          "type": "number",
+          "description": "Taxa de entrega"
+        },
+        "total": {
+          "type": "number",
+          "description": "Total do pedido"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["novo", "separacao", "entrega", "concluido", "cancelado"],
+          "description": "Status atual do pedido"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Carimbo de criacao do servidor"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Carimbo de atualizacao do servidor"
+        }
+      },
+      "required": [
+        "code",
+        "customerName",
+        "customerPhone",
+        "fulfillmentType",
+        "address",
+        "paymentMethod",
+        "items",
+        "subtotal",
+        "deliveryFee",
+        "total",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OrderTracking": {
+      "title": "OrderTracking",
+      "description": "Projecao sem dados pessoais (PII) para acompanhamento em tempo real pelo cliente via ID do pedido.",
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "ID do pedido correspondente"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 20,
+          "pattern": "^HM-[A-Z0-9]{4,12}$",
+          "description": "Codigo legivel do pedido"
+        },
+        "fulfillmentType": {
+          "type": "string",
+          "enum": ["delivery", "retirada"],
+          "description": "Modalidade de entrega"
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["pix", "cartao_link", "cartao", "dinheiro"],
+          "description": "Forma de pagamento"
+        },
+        "items": {
+          "type": "array",
+          "description": "Lista de itens do pedido"
+        },
+        "subtotal": {
+          "type": "number",
+          "description": "Subtotal dos itens"
+        },
+        "deliveryFee": {
+          "type": "number",
+          "description": "Taxa de entrega"
+        },
+        "total": {
+          "type": "number",
+          "description": "Total do pedido"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["novo", "separacao", "entrega", "concluido", "cancelado"],
+          "description": "Status atual do pedido"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Carimbo de criacao do servidor"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Carimbo de atualizacao do servidor"
+        }
+      },
+      "required": [
+        "orderId",
+        "code",
+        "fulfillmentType",
+        "paymentMethod",
+        "items",
+        "subtotal",
+        "deliveryFee",
+        "total",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Registro de administradores autorizados.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Email do administrador"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data de cadastro"
+        }
+      },
+      "required": ["email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/storeConfig/{configId}": {
+      "schema": { "$ref": "#/entities/StoreConfig" },
+      "description": "Configuracoes publicas da loja Hortimarket (documento 'main')."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Catalogo de produtos disponiveis na loja."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Pedidos completos dos clientes (leitura restrita ao administrador)."
+    },
+    "/orderTracking/{orderId}": {
+      "schema": { "$ref": "#/entities/OrderTracking" },
+      "description": "Status publico sem PII por ID exato do pedido (sem listagem publica)."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Lista de UIDs administradores adicionais."
+    }
+  }
+}

@@ -102,21 +102,25 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     setErrorMsg(null);
     setSubmitting(true);
     try {
-      const result = await createOrder({
-        customerName,
-        customerPhone,
-        fulfillmentType,
-        address,
-        neighborhood,
-        complement,
-        paymentMethod: selectedPayment,
-        changeFor,
-        notes,
-        items: cartLines.map((l) => ({
-          productId: l.product.id,
-          quantity: l.quantity,
-        })),
-      });
+      const result = await createOrder(
+        {
+          customerName,
+          customerPhone,
+          fulfillmentType,
+          address,
+          neighborhood,
+          complement,
+          paymentMethod: selectedPayment,
+          changeFor,
+          notes,
+          items: cartLines.map((l) => ({
+            productId: l.product.id,
+            quantity: l.quantity,
+          })),
+        },
+        store,
+        products
+      );
       if (!result.order) {
         setErrorMsg(result.error || 'Não foi possível concluir seu pedido.');
         return;

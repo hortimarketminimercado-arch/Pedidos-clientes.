@@ -46,11 +46,12 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,woff,woff2}'],
           navigateFallbackDenylist: [/^\/api/],
           runtimeCaching: [
             {
-              urlPattern: /^\/api\/.*/i,
+              urlPattern: ({url}) => url.pathname.startsWith('/api'),
               handler: 'NetworkOnly',
             },
             {

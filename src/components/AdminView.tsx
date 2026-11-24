@@ -9,6 +9,7 @@ import {
   ExternalLink,
   ImagePlus,
   Loader2,
+  LogOut,
   MessageCircle,
   Package,
   Pencil,
@@ -58,6 +59,7 @@ interface AdminViewProps {
   onDeleteProduct: (id: string) => Promise<void>;
   onUpdateOrderStatus: (orderId: string, status: OrderStatus) => Promise<void>;
   onRefresh?: () => void;
+  onSignOut?: () => void;
 }
 
 type AdminTab = 'overview' | 'products' | 'orders' | 'settings';
@@ -134,6 +136,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   onDeleteProduct,
   onUpdateOrderStatus,
   onRefresh,
+  onSignOut,
 }) => {
   const [activeTab, setActiveTab] = useState<AdminTab>('products');
   const [productSearch, setProductSearch] = useState('');
@@ -491,6 +494,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
             <Plus className="w-4 h-4" />
             <span>Novo produto</span>
           </button>
+
+          {onSignOut && (
+            <button
+              type="button"
+              onClick={onSignOut}
+              title="Sair da conta administrativa"
+              className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-semibold bg-white border border-[#D4DBD0] text-[#526057] hover:text-[#143624] hover:bg-[#EEF3EC] transition-colors cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Sair</span>
+            </button>
+          )}
         </div>
       </div>
 

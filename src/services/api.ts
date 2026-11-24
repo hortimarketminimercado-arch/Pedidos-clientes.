@@ -1,332 +1,572 @@
+import { type User } from 'firebase/auth';
 import {
-  INITIAL_DEPARTMENTS,
+  Timestamp,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  writeBatch,
+} from 'firebase/firestore';
+import {
   INITIAL_STORE,
-  computeAnalytics,
-  createInitialOrders,
   createInitialProducts,
   normalizeLogoUrl,
 } from '../data/seed';
+import { OperationType, db, handleFirestoreError } from '../firebase';
 import type {
-  AnalyticsSummary,
   CreateOrderPayload,
-  Department,
   Order,
   OrderItem,
   OrderStatus,
+  PaymentMethod,
   Product,
   ProductInput,
   StoreConfig,
 } from '../types';
 
-const STORE_KEY = 'hm_local_store_v1';
-const PRODUCTS_KEY = 'hm_local_products_v1';
-const ORDERS_KEY = 'hm_local_orders_v1';
-const NEXT_ORDER_KEY = 'hm_local_next_order_v1';
+export const ADMIN_EMAIL = 'hortimarketminimercado@gmail.com';
+const VALID_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+const VALID_PAYMENTS: PaymentMethod[] = ['pix', 'cartao_link', 'cartao', 'dinheiro'];
 
-function notifyOrdersUpdated(): void {
-  try {
-    if (typeof BroadcastChannel !== 'undefined') {
-      const bc = new BroadcastChannel('hortimarket_sync');
-      bc.postMessage({ type: 'orders-updated', at: Date.now() });
-      bc.close();
-    }
-  } catch {
-    // Ignore BroadcastChannel errors
+function timestampToIso(value: unknown): string {
+  if (value instanceof Timestamp) {
+    return value.toDate().toISOString();
   }
-}
-
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T | null> {
-  try {
-    const res = await fetch(url, {
-      cache: 'no-store',
-      credentials: 'same-origin',
-      ...init,
-    });
-    const ct = res.headers.get('content-type') || '';
-    if (!res.ok || !ct.includes('application/json')) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
+  if (value && typeof value === 'object' && 'toDate' in value && typeof (value as { toDate: () => Date }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate().toISOString();
   }
-}
-
-function readLocal<T>(key: string, fallbackFactory: () => T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) {
-      const value = fallbackFactory();
-      localStorage.setItem(key, JSON.stringify(value));
-      return value;
-    }
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallbackFactory();
+  if (typeof value === 'string' && value) {
+    return value;
   }
+  return new Date().toISOString();
 }
 
-function writeLocal<T>(key: string, value: T): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Ignore storage quota errors
-  }
+function clampStr(value: string | undefined, maxLen: number): string {
+  return String(value ?? '').trim().slice(0, maxLen);
 }
 
-export interface BootstrapData {
-  store: StoreConfig;
-  departments: Department[];
-  products: Product[];
-  orders: Order[];
-  analytics: AnalyticsSummary;
+function sanitizePhone(value: string | undefined): string {
+  const cleaned = String(value ?? '')
+    .replace(/[^0-9+()\-\s]/g, '')
+    .trim()
+    .slice(0, 25);
+  return cleaned.length >= 8 ? cleaned : INITIAL_STORE.whatsappNumber;
 }
 
-export interface BootstrapOptions {
-  admin?: boolean;
-  myOrderCodes?: string[];
-}
+function sanitizeStorePayload(store: StoreConfig) {
+  const acceptedPayments = (store.acceptedPayments || ['pix', 'cartao_link'])
+    .filter((m): m is PaymentMethod => VALID_PAYMENTS.includes(m))
+    .slice(0, 4);
 
-export async function fetchBootstrapData(options?: BootstrapOptions): Promise<BootstrapData> {
-  const isAdmin = Boolean(options?.admin);
-  const myCodes = (options?.myOrderCodes || []).map((c) => c.trim().toUpperCase()).filter(Boolean);
-  const ordersUrl = isAdmin
-    ? '/api/orders'
-    : `/api/orders?scope=customer&codes=${encodeURIComponent(myCodes.join(','))}`;
-
-  const [storeRes, productsRes, ordersRes, analyticsRes] = await Promise.all([
-    fetchJson<{ store: StoreConfig; departments?: Department[] }>('/api/store'),
-    fetchJson<{ products: Product[] }>('/api/products'),
-    fetchJson<{ orders: Order[] }>(ordersUrl),
-    isAdmin ? fetchJson<{ analytics: AnalyticsSummary }>('/api/analytics') : Promise.resolve(null),
-  ]);
-
-  if (storeRes?.store && productsRes?.products && ordersRes?.orders) {
-    const mergedStore: StoreConfig = {
-      ...INITIAL_STORE,
-      ...storeRes.store,
-      logoUrl: normalizeLogoUrl(storeRes.store.logoUrl),
-    };
-    writeLocal(STORE_KEY, mergedStore);
-    writeLocal(PRODUCTS_KEY, productsRes.products);
-    if (isAdmin) {
-      writeLocal(ORDERS_KEY, ordersRes.orders);
-    }
-    return {
-      store: mergedStore,
-      departments: storeRes.departments || INITIAL_DEPARTMENTS,
-      products: productsRes.products,
-      orders: ordersRes.orders,
-      analytics:
-        analyticsRes?.analytics || computeAnalytics(productsRes.products, ordersRes.orders),
-    };
-  }
-
-  const rawLocalStore = readLocal(STORE_KEY, () => INITIAL_STORE);
-  const store: StoreConfig = {
-    ...INITIAL_STORE,
-    ...rawLocalStore,
-    logoUrl: normalizeLogoUrl(rawLocalStore.logoUrl),
-  };
-  writeLocal(STORE_KEY, store);
-  const products = readLocal(PRODUCTS_KEY, createInitialProducts);
-  const allOrders = readLocal(ORDERS_KEY, createInitialOrders);
-  const visibleOrders = isAdmin
-    ? allOrders
-    : allOrders.filter((o) => myCodes.includes(o.code.toUpperCase()));
   return {
-    store,
-    departments: INITIAL_DEPARTMENTS,
-    products,
-    orders: visibleOrders,
-    analytics: computeAnalytics(products, visibleOrders),
+    name: clampStr(store.name, 120) || INITIAL_STORE.name,
+    tagline: clampStr(store.tagline, 240),
+    whatsappNumber: sanitizePhone(store.whatsappNumber),
+    isOpen: Boolean(store.isOpen),
+    openingHours: clampStr(store.openingHours, 160),
+    address: clampStr(store.address, 200),
+    neighborhood: clampStr(store.neighborhood, 120),
+    deliveryFee: Math.min(1000, Math.max(0, Number(store.deliveryFee) || 0)),
+    freeDeliveryThreshold: Math.min(10000, Math.max(0, Number(store.freeDeliveryThreshold) || 0)),
+    flyerTitle: clampStr(store.flyerTitle, 160),
+    flyerValidity: clampStr(store.flyerValidity, 240),
+    flyerSubtitle: clampStr(store.flyerSubtitle, 240),
+    acceptedPayments: acceptedPayments.length > 0 ? acceptedPayments : ['pix'],
+    pixKey: clampStr(store.pixKey, 140),
+    paymentLinkInfo: clampStr(store.paymentLinkInfo, 300),
+    logoUrl: String(normalizeLogoUrl(store.logoUrl)).slice(0, 300000),
+    updatedAt: serverTimestamp(),
   };
 }
 
-export async function updateStoreConfig(patch: Partial<StoreConfig>): Promise<StoreConfig> {
-  const res = await fetchJson<{ store: StoreConfig }>('/api/store', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  });
-  if (res?.store) {
-    writeLocal(STORE_KEY, res.store);
-    return res.store;
+function sanitizeProductPayload(input: ProductInput) {
+  const ean = clampStr(input.ean, 32);
+  const price = Math.min(100000, Math.max(0.01, Number(input.price) || 0.01));
+  const rawPromo = input.promoPrice;
+  const promoPrice =
+    typeof rawPromo === 'number' && !Number.isNaN(rawPromo) && rawPromo > 0
+      ? Math.min(100000, rawPromo)
+      : null;
+
+  const base: Record<string, unknown> = {
+    name: clampStr(input.name, 140) || 'Produto',
+    description: clampStr(input.description, 500),
+    department: clampStr(input.department, 60) || 'mercearia',
+    unit: clampStr(input.unit, 30) || 'un',
+    weightLabel: clampStr(input.weightLabel, 60) || '1 unidade',
+    price,
+    promoPrice,
+    stock: Math.min(1000000, Math.max(0, Math.floor(Number(input.stock) || 0))),
+    imageUrl: String(input.imageUrl || '').trim().slice(0, 300000),
+    isDailyOffer: Boolean(input.isDailyOffer),
+    inDigitalFlyer: Boolean(input.inDigitalFlyer),
+    active: Boolean(input.active),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (ean) {
+    base.ean = ean;
   }
-  const updated = { ...readLocal(STORE_KEY, () => INITIAL_STORE), ...patch };
-  writeLocal(STORE_KEY, updated);
-  return updated;
+
+  return base;
+}
+
+export async function checkUserIsAdmin(user: User | null): Promise<boolean> {
+  if (!user || !user.emailVerified) return false;
+  if (user.email?.toLowerCase() === ADMIN_EMAIL) return true;
+  try {
+    const adminSnap = await getDoc(doc(db, 'admins', user.uid));
+    return adminSnap.exists();
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureFirestoreSeeded(): Promise<void> {
+  const storeRef = doc(db, 'storeConfig', 'main');
+  try {
+    const storeSnap = await getDoc(storeRef);
+    if (!storeSnap.exists()) {
+      await setDoc(storeRef, sanitizeStorePayload(INITIAL_STORE));
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'storeConfig/main');
+  }
+
+  try {
+    const prodSnap = await getDocs(query(collection(db, 'products'), limit(1)));
+    if (prodSnap.empty) {
+      const batch = writeBatch(db);
+      for (const product of createInitialProducts()) {
+        const ref = doc(db, 'products', product.id);
+        batch.set(ref, sanitizeProductPayload(product));
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'products');
+  }
+}
+
+export function subscribeStoreConfig(
+  onStore: (store: StoreConfig, existsInDb: boolean) => void
+): () => void {
+  const ref = doc(db, 'storeConfig', 'main');
+  return onSnapshot(
+    ref,
+    (snap) => {
+      if (!snap.exists()) {
+        onStore(INITIAL_STORE, false);
+        return;
+      }
+      const data = snap.data() as Partial<StoreConfig>;
+      onStore(
+        {
+          ...INITIAL_STORE,
+          ...data,
+          logoUrl: normalizeLogoUrl(data.logoUrl),
+        },
+        true
+      );
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.GET, 'storeConfig/main');
+    }
+  );
+}
+
+export function subscribeProducts(
+  isDbSeeded: boolean,
+  onProducts: (products: Product[]) => void
+): () => void {
+  const colRef = collection(db, 'products');
+  return onSnapshot(
+    colRef,
+    (snapshot) => {
+      if (snapshot.empty && !isDbSeeded) {
+        onProducts(createInitialProducts());
+        return;
+      }
+      const items: Product[] = snapshot.docs.map((d) => {
+        const data = d.data() as Record<string, unknown>;
+        return {
+          id: d.id,
+          ean: typeof data.ean === 'string' ? data.ean : undefined,
+          name: String(data.name ?? ''),
+          description: String(data.description ?? ''),
+          department: String(data.department ?? 'mercearia'),
+          unit: String(data.unit ?? 'un'),
+          weightLabel: String(data.weightLabel ?? ''),
+          price: Number(data.price ?? 0),
+          promoPrice: typeof data.promoPrice === 'number' ? data.promoPrice : null,
+          stock: Number(data.stock ?? 0),
+          imageUrl: String(data.imageUrl ?? ''),
+          isDailyOffer: Boolean(data.isDailyOffer),
+          inDigitalFlyer: Boolean(data.inDigitalFlyer),
+          active: data.active !== false,
+          updatedAt: timestampToIso(data.updatedAt),
+        };
+      });
+      items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      onProducts(items);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'products');
+    }
+  );
+}
+
+export function subscribeAdminOrders(onOrders: (orders: Order[]) => void): () => void {
+  const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const orders: Order[] = snapshot.docs.map((d) => {
+        const data = d.data() as Record<string, unknown>;
+        return {
+          id: d.id,
+          code: String(data.code ?? d.id),
+          customerName: String(data.customerName ?? ''),
+          customerPhone: String(data.customerPhone ?? ''),
+          fulfillmentType: data.fulfillmentType === 'retirada' ? 'retirada' : 'delivery',
+          address: String(data.address ?? ''),
+          neighborhood: String(data.neighborhood ?? ''),
+          complement: String(data.complement ?? ''),
+          paymentMethod: (VALID_PAYMENTS.includes(data.paymentMethod as PaymentMethod)
+            ? data.paymentMethod
+            : 'pix') as PaymentMethod,
+          changeFor: String(data.changeFor ?? ''),
+          notes: String(data.notes ?? ''),
+          items: Array.isArray(data.items) ? (data.items as OrderItem[]) : [],
+          subtotal: Number(data.subtotal ?? 0),
+          deliveryFee: Number(data.deliveryFee ?? 0),
+          total: Number(data.total ?? 0),
+          status: (data.status as OrderStatus) || 'novo',
+          createdAt: timestampToIso(data.createdAt),
+          updatedAt: timestampToIso(data.updatedAt),
+        };
+      });
+      onOrders(orders);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'orders');
+    }
+  );
+}
+
+export interface StoredCustomerOrderRef {
+  id: string;
+  code: string;
+  receipt?: Order;
+}
+
+export function subscribeCustomerOrders(
+  orderRefs: StoredCustomerOrderRef[],
+  onOrders: (orders: Order[]) => void
+): () => void {
+  const validRefs = orderRefs.filter((r) => VALID_ID_REGEX.test(r.id));
+  if (validRefs.length === 0) {
+    onOrders([]);
+    return () => {};
+  }
+
+  const stateMap = new Map<string, Order>();
+  for (const ref of validRefs) {
+    if (ref.receipt) {
+      stateMap.set(ref.id, ref.receipt);
+    }
+  }
+  onOrders(
+    Array.from(stateMap.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  );
+
+  const unsubscribes = validRefs.map((ref) => {
+    const trackingDocRef = doc(db, 'orderTracking', ref.id);
+    return onSnapshot(
+      trackingDocRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as Record<string, unknown>;
+          const prev = ref.receipt;
+          const merged: Order = {
+            id: ref.id,
+            code: String(data.code ?? prev?.code ?? ref.code),
+            customerName: prev?.customerName || 'Seu pedido',
+            customerPhone: prev?.customerPhone || '',
+            fulfillmentType: data.fulfillmentType === 'retirada' ? 'retirada' : 'delivery',
+            address: prev?.address || (data.fulfillmentType === 'retirada' ? 'Retirada na loja' : 'Endereço informado no pedido'),
+            neighborhood: prev?.neighborhood || '',
+            complement: prev?.complement || '',
+            paymentMethod: (VALID_PAYMENTS.includes(data.paymentMethod as PaymentMethod)
+              ? data.paymentMethod
+              : 'pix') as PaymentMethod,
+            changeFor: prev?.changeFor || '',
+            notes: prev?.notes || '',
+            items: Array.isArray(data.items) ? (data.items as OrderItem[]) : prev?.items || [],
+            subtotal: Number(data.subtotal ?? prev?.subtotal ?? 0),
+            deliveryFee: Number(data.deliveryFee ?? prev?.deliveryFee ?? 0),
+            total: Number(data.total ?? prev?.total ?? 0),
+            status: (data.status as OrderStatus) || prev?.status || 'novo',
+            createdAt: timestampToIso(data.createdAt),
+            updatedAt: timestampToIso(data.updatedAt),
+          };
+          stateMap.set(ref.id, merged);
+          onOrders(
+            Array.from(stateMap.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+          );
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, `orderTracking/${ref.id}`);
+      }
+    );
+  });
+
+  return () => {
+    for (const unsub of unsubscribes) unsub();
+  };
+}
+
+export async function updateStoreConfig(
+  currentStore: StoreConfig,
+  patch: Partial<StoreConfig>
+): Promise<StoreConfig> {
+  const merged: StoreConfig = { ...currentStore, ...patch };
+  const payload = sanitizeStorePayload(merged);
+  try {
+    await setDoc(doc(db, 'storeConfig', 'main'), payload);
+    return {
+      ...merged,
+      logoUrl: payload.logoUrl,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'storeConfig/main');
+  }
 }
 
 export async function createProduct(input: ProductInput): Promise<Product> {
-  const res = await fetchJson<{ product: Product }>('/api/products', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
-  if (res?.product) return res.product;
-
-  const current = readLocal(PRODUCTS_KEY, createInitialProducts);
-  const created: Product = {
-    ...input,
-    id: `hm-${Date.now().toString(36)}`,
-    updatedAt: new Date().toISOString(),
-  };
-  writeLocal(PRODUCTS_KEY, [created, ...current]);
-  return created;
+  const id = `hm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const payload = sanitizeProductPayload(input);
+  try {
+    await setDoc(doc(db, 'products', id), payload);
+    return {
+      ...input,
+      id,
+      updatedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `products/${id}`);
+  }
 }
 
-export async function updateProduct(id: string, patch: Partial<ProductInput>): Promise<Product | null> {
-  const res = await fetchJson<{ product: Product }>(`/api/products/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
-  });
-  if (res?.product) return res.product;
-
-  const current = readLocal(PRODUCTS_KEY, createInitialProducts);
-  const idx = current.findIndex((p) => p.id === id);
-  if (idx === -1) return null;
-  const updated: Product = {
-    ...current[idx],
-    ...patch,
-    id,
-    updatedAt: new Date().toISOString(),
+export async function updateProduct(
+  currentProduct: Product,
+  patch: Partial<ProductInput>
+): Promise<void> {
+  const merged: ProductInput = {
+    ean: patch.ean !== undefined ? patch.ean : currentProduct.ean,
+    name: patch.name !== undefined ? patch.name : currentProduct.name,
+    description: patch.description !== undefined ? patch.description : currentProduct.description,
+    department: patch.department !== undefined ? patch.department : currentProduct.department,
+    unit: patch.unit !== undefined ? patch.unit : currentProduct.unit,
+    weightLabel: patch.weightLabel !== undefined ? patch.weightLabel : currentProduct.weightLabel,
+    price: patch.price !== undefined ? patch.price : currentProduct.price,
+    promoPrice: patch.promoPrice !== undefined ? patch.promoPrice : currentProduct.promoPrice,
+    stock: patch.stock !== undefined ? patch.stock : currentProduct.stock,
+    imageUrl: patch.imageUrl !== undefined ? patch.imageUrl : currentProduct.imageUrl,
+    isDailyOffer: patch.isDailyOffer !== undefined ? patch.isDailyOffer : currentProduct.isDailyOffer,
+    inDigitalFlyer:
+      patch.inDigitalFlyer !== undefined ? patch.inDigitalFlyer : currentProduct.inDigitalFlyer,
+    active: patch.active !== undefined ? patch.active : currentProduct.active,
   };
-  current[idx] = updated;
-  writeLocal(PRODUCTS_KEY, current);
-  return updated;
+  const payload = sanitizeProductPayload(merged);
+  try {
+    await setDoc(doc(db, 'products', currentProduct.id), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `products/${currentProduct.id}`);
+  }
 }
 
 export async function deleteProduct(id: string): Promise<void> {
-  const res = await fetchJson<{ deletedId: string }>(`/api/products/${id}`, {
-    method: 'DELETE',
-  });
-  if (!res?.deletedId) {
-    const current = readLocal(PRODUCTS_KEY, createInitialProducts);
-    writeLocal(
-      PRODUCTS_KEY,
-      current.filter((p) => p.id !== id)
-    );
+  try {
+    await deleteDoc(doc(db, 'products', id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `products/${id}`);
   }
 }
 
 export async function createOrder(
-  payload: CreateOrderPayload
+  payload: CreateOrderPayload,
+  store: StoreConfig,
+  products: Product[]
 ): Promise<{ order?: Order; error?: string }> {
-  try {
-    const res = await fetch('/api/orders', {
-      method: 'POST',
-      cache: 'no-store',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if ((res.headers.get('content-type') || '').includes('application/json')) {
-      const data = await res.json();
-      if (res.ok && data.order) {
-        const created = data.order as Order;
-        const localOrders = readLocal(ORDERS_KEY, createInitialOrders);
-        writeLocal(ORDERS_KEY, [created, ...localOrders.filter((o) => o.id !== created.id)]);
-        notifyOrdersUpdated();
-        return { order: created };
-      }
-      if (!res.ok) return { error: data.error || 'Não foi possível registrar seu pedido.' };
-    }
-  } catch {
-    // Fallback to local mode
+  const customerName = clampStr(payload.customerName, 120);
+  const customerPhone = clampStr(payload.customerPhone, 30);
+  if (!customerName || customerPhone.length < 6) {
+    return { error: 'Informe seu nome e telefone/WhatsApp válido.' };
   }
-
-  const store = readLocal(STORE_KEY, () => INITIAL_STORE);
-  const products = readLocal(PRODUCTS_KEY, createInitialProducts);
-  const orders = readLocal(ORDERS_KEY, createInitialOrders);
-
-  if (!payload.customerName.trim() || !payload.customerPhone.trim()) {
-    return { error: 'Informe seu nome e telefone/WhatsApp.' };
-  }
-  if (payload.fulfillmentType === 'delivery' && !payload.address.trim()) {
+  const fulfillmentType = payload.fulfillmentType === 'retirada' ? 'retirada' : 'delivery';
+  const address =
+    fulfillmentType === 'delivery' ? clampStr(payload.address, 220) : 'Retirada na loja';
+  if (fulfillmentType === 'delivery' && !address) {
     return { error: 'Informe o endereço completo para entrega.' };
   }
+  if (!Array.isArray(payload.items) || payload.items.length === 0) {
+    return { error: 'A sacola está vazia.' };
+  }
 
-  const items: OrderItem[] = [];
-  for (const itemReq of payload.items) {
-    const product = products.find((p) => p.id === itemReq.productId && p.active);
+  const orderItems: OrderItem[] = [];
+  for (const reqItem of payload.items.slice(0, 60)) {
+    const product = products.find((p) => p.id === reqItem.productId && p.active);
     if (!product) {
       return { error: 'Um dos produtos selecionados não está mais disponível.' };
     }
-    const qty = Math.max(1, Math.floor(itemReq.quantity));
+    const qty = Math.min(1000, Math.max(1, Math.floor(Number(reqItem.quantity) || 1)));
     if (product.stock < qty) {
-      return { error: `Estoque insuficiente para "${product.name}". Disponível: ${product.stock}.` };
+      return {
+        error: `Estoque insuficiente para "${product.name}". Disponível: ${product.stock}.`,
+      };
     }
-    const unitPrice = product.promoPrice ?? product.price;
-    items.push({
-      productId: product.id,
-      name: product.name,
-      unit: product.unit,
-      weightLabel: product.weightLabel,
+    const unitPrice = Number((product.promoPrice ?? product.price).toFixed(2));
+    const subtotal = Number((unitPrice * qty).toFixed(2));
+    orderItems.push({
+      productId: clampStr(product.id, 80),
+      name: clampStr(product.name, 140),
+      unit: clampStr(product.unit, 30) || 'un',
+      weightLabel: clampStr(product.weightLabel, 60) || '1 unidade',
       unitPrice,
       quantity: qty,
-      subtotal: Number((unitPrice * qty).toFixed(2)),
+      subtotal,
     });
   }
 
-  const now = new Date().toISOString();
-  for (const item of items) {
-    const prod = products.find((p) => p.id === item.productId);
-    if (prod) {
-      prod.stock = Math.max(0, prod.stock - item.quantity);
-      prod.updatedAt = now;
-    }
+  const subtotal = Number(orderItems.reduce((acc, item) => acc + item.subtotal, 0).toFixed(2));
+  const deliveryFee =
+    fulfillmentType === 'retirada' || subtotal >= store.freeDeliveryThreshold
+      ? 0
+      : Number(store.deliveryFee.toFixed(2));
+  const total = Number((subtotal + deliveryFee).toFixed(2));
+
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase().replace(/[^A-Z0-9]/g, 'X');
+  const timeCode = Date.now().toString(36).slice(-4).toUpperCase().replace(/[^A-Z0-9]/g, '0');
+  const code = `HM-${timeCode}${rand}`;
+  const orderId = `ord-${Date.now().toString(36)}-${rand.toLowerCase()}`;
+
+  const paymentMethod: PaymentMethod = VALID_PAYMENTS.includes(payload.paymentMethod)
+    ? payload.paymentMethod
+    : 'pix';
+
+  const neighborhood =
+    fulfillmentType === 'delivery'
+      ? clampStr(payload.neighborhood, 120)
+      : clampStr(store.neighborhood, 120);
+  const complement = clampStr(payload.complement, 120);
+  const changeFor = clampStr(payload.changeFor, 60);
+  const notes = clampStr(payload.notes, 400);
+
+  const nowIso = new Date().toISOString();
+  const batch = writeBatch(db);
+
+  const orderDocData = {
+    code,
+    customerName,
+    customerPhone,
+    fulfillmentType,
+    address,
+    neighborhood,
+    complement,
+    paymentMethod,
+    changeFor,
+    notes,
+    items: orderItems,
+    subtotal,
+    deliveryFee,
+    total,
+    status: 'novo' as OrderStatus,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  const trackingDocData = {
+    orderId,
+    code,
+    fulfillmentType,
+    paymentMethod,
+    items: orderItems,
+    subtotal,
+    deliveryFee,
+    total,
+    status: 'novo' as OrderStatus,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  batch.set(doc(db, 'orders', orderId), orderDocData);
+  batch.set(doc(db, 'orderTracking', orderId), trackingDocData);
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    console.error('Erro ao gravar pedido no Firestore:', error);
+    return { error: 'Não foi possível enviar o pedido para a loja. Verifique sua conexão e tente novamente.' };
   }
 
-  const subtotal = Number(items.reduce((acc, item) => acc + item.subtotal, 0).toFixed(2));
-  const deliveryFee =
-    payload.fulfillmentType === 'retirada' || subtotal >= store.freeDeliveryThreshold
-      ? 0
-      : store.deliveryFee;
-  const total = Number((subtotal + deliveryFee).toFixed(2));
-  const nextNum = readLocal(NEXT_ORDER_KEY, () => 1003);
-  writeLocal(NEXT_ORDER_KEY, nextNum + 1);
-
   const createdOrder: Order = {
-    id: `ord-${nextNum}`,
-    code: `HM-${nextNum}`,
-    customerName: payload.customerName.trim(),
-    customerPhone: payload.customerPhone.trim(),
-    fulfillmentType: payload.fulfillmentType,
-    address: payload.fulfillmentType === 'delivery' ? payload.address.trim() : 'Retirada na loja',
-    neighborhood:
-      payload.fulfillmentType === 'delivery' ? payload.neighborhood.trim() : store.neighborhood,
-    complement: payload.complement.trim(),
-    paymentMethod: payload.paymentMethod,
-    changeFor: payload.changeFor.trim(),
-    notes: payload.notes.trim(),
-    items,
+    id: orderId,
+    code,
+    customerName,
+    customerPhone,
+    fulfillmentType,
+    address,
+    neighborhood,
+    complement,
+    paymentMethod,
+    changeFor,
+    notes,
+    items: orderItems,
     subtotal,
     deliveryFee,
     total,
     status: 'novo',
-    createdAt: now,
-    updatedAt: now,
+    createdAt: nowIso,
+    updatedAt: nowIso,
   };
 
-  writeLocal(PRODUCTS_KEY, products);
-  writeLocal(ORDERS_KEY, [createdOrder, ...orders]);
-  notifyOrdersUpdated();
   return { order: createdOrder };
 }
 
 export async function updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
-  const res = await fetchJson<{ order: Order }>(`/api/orders/${orderId}/status`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
-  });
-  if (res?.order) return;
-
-  const orders = readLocal(ORDERS_KEY, createInitialOrders);
-  const found = orders.find((o) => o.id === orderId);
-  if (found) {
-    found.status = status;
-    found.updatedAt = new Date().toISOString();
-    writeLocal(ORDERS_KEY, orders);
+  const orderRef = doc(db, 'orders', orderId);
+  const trackingRef = doc(db, 'orderTracking', orderId);
+  try {
+    const trackingSnap = await getDoc(trackingRef);
+    const batch = writeBatch(db);
+    batch.update(orderRef, { status, updatedAt: serverTimestamp() });
+    if (trackingSnap.exists()) {
+      batch.update(trackingRef, { status, updatedAt: serverTimestamp() });
+    }
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `orders/${orderId}`);
   }
 }
+
+export async function updateProductQuick(
+  id: string,
+  patch: Partial<ProductInput>,
+  products: Product[]
+): Promise<void> {
+  const current = products.find((p) => p.id === id);
+  if (!current) return;
+  await updateProduct(current, patch);
+}
+
+export { updateDoc };
